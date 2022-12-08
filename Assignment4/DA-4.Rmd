@@ -1,0 +1,330 @@
+---
+title: "Data Analysis Assignment 4"
+header-includes: \usepackage{dcolumn}
+geometry: "left=1.2cm,right=1.2cm,top=1cm,bottom=1.3cm"
+output:
+  pdf_document: default
+  word_document: default
+  html_document:
+    df_print: paged
+always_allow_html: yes
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR2)
+library(knitr)
+library(ggplot2)
+library(kableExtra)
+library(lattice)
+library(dplyr)
+library(gt)
+library(janitor)
+library(flextable)
+library(magrittr)
+library(Hmisc)
+library(caret)
+library(patchwork)
+library(leaps)
+library(rms)
+library(arm)
+library(pROC)
+library(e1071)
+library(caret)
+require(gridExtra)
+library(table1)
+library(nnet)
+```
+
+```{r echo = FALSE,warning=FALSE, message=FALSE, fig.align='center'}
+load('airline_survey')
+```
+
+# Data Overview
+```{r echo = FALSE,warning=FALSE, message=FALSE, align='center'}
+airline$Satisfaction <- ordered(airline$Satisfaction,
+                              levels=c("dissatisfied","neutral","satisfied"))
+airline <- airline[airline$Seat.comfort != 0 & airline$Leg.room.service !=0 & airline$Inflight.service !=0 & airline$On.board.service!=0 & airline$Cleanliness !=0 & airline$Inflight.entertainment!=0 & airline$Inflight.wifi.service!=0 & airline$Ease.of.Online.booking!=0 & airline$Online.boarding!=0 & airline$Food.and.drink!=0 & airline$Departure.Arrival.time.convenient!=0 & airline$Baggage.handling!=0 & airline$Gate.location!=0 & airline$Checkin.service!=0,]
+```
+
+```{r echo = FALSE,fig.cap="Table 1. Satisfaction vs. Other Variables", align='center'}
+table1(~ Leg.room.service+Arrival.Delay.in.Minutes+Inflight.service+On.board.service +Cleanliness +Inflight.wifi.service + Ease.of.Online.booking + Online.boarding + Departure.Arrival.time.convenient+Checkin.service + Age| Satisfaction, data=airline)
+```
+
+* Table above shows the distribution of customers in the different satisfactory categories based on some important different customers features, their satisfaction with various aspects of the flight, and detail of their flight information.
+
+* The following tables show the distribution of customers in the different satisfactory categories and also the distribution of different satisfactory categories within different customer type, gender, travel type, and travel class in the plane. 
+
+* We have **more data points at the satisfied level** compared to other levels. After running Pearson's Chi-squared test on categorical variables, including different gender, customer type, type of travel,and travel class in the plane we can tell that **customer type, type of travel, and travel class in the plane** might be very correlated to customer satisfaction (p-value < 0.01).
+
+```{r echo = FALSE,warning=FALSE, message=FALSE, fig.align='center',fig.cap="Table 2. Satisfaction vs. Customer.Type/Gender/Type.of.Travel"}
+t1 <- table(airline$Satisfaction)%>%round(2)
+#knitr::kable(table(airline$Satisfaction),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+
+#loyalty/customer type
+t2 <- prop.table(table(airline$Satisfaction, airline$Customer.Type), 2)%>%round(2)
+#knitr::kable(prop.table(table(airline$Satisfaction, airline$Customer.Type), 2),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+#chisq.test(table(airline$Satisfaction, airline$Customer.Type))
+
+#gender
+t3 <- prop.table(table(airline$Satisfaction, airline$Gender), 2)%>%round(2)
+#knitr::kable(prop.table(table(airline$Satisfaction, airline$Gender), 2),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+#chisq.test(table(airline$Satisfaction, airline$Gender))
+
+#type of travel
+t4 <- prop.table(table(airline$Satisfaction, airline$Type.of.Travel), 2)%>%round(2)
+#knitr::kable(prop.table(table(airline$Satisfaction, airline$Type.of.Travel), 2),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+#chisq.test(table(airline$Satisfaction, airline$Type.of.Travel))
+
+#class
+t5 <- prop.table(table(airline$Satisfaction, airline$Class), 2)%>%round(2)
+#knitr::kable(prop.table(table(airline$Satisfaction, airline$Class), 2),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+#chisq.test(table(airline$Satisfaction, airline$Class))
+
+knitr::kable(list(t1, t2, t3,t4,t5))
+
+```
+
+### Model
+
+* Customers satisfaction is on an **ordered 3 scale outcome: dissatisfied, neutral, and satisfied**, which means that our response variable is ordinal. When we have ordinal response with categories dissatisfied, neutral, and satisfied, we need to use models that can reflect the ordering. Pr[yi <= dis|xi] <= Pr[yi <= neu|xi] <= Pr[yi <= sa|xi]. Here, the ordering of probabilities is the cumulative probabilities. Therefore, the model we are going to use is one type of generalized linear model, called **proportional odds model**.
+
+* With all the predictors that we're going to use for this analysis, our model is as following:
+$$\operatorname{log(Pr[yi<=j|xi]/Pr[yi>j|xi])} =\beta_{0} + \beta_{1}(\operatorname{Seat.comfort}) +\beta_{2}(\operatorname{Leg.room.service}) + \beta_{3}(\operatorname{Arrival.Delay.in.Minutes}) +$$ 
+$$ \beta_{4}(\operatorname{Departure.Delay.in.Minutes}) + \beta_{5}(\operatorname{Inflight.service}) + \beta_{6}(\operatorname{On.board.service}) + \beta_{7}(\operatorname{Cleanliness}) + \beta_{8}(\operatorname{Inflight.entertainment})+ $$
+$$ \beta_{9}(\operatorname{Inflight.wifi.service}) + \beta_{10}(\operatorname{Age}) + \beta_{11}(\operatorname{Type.of.TravelPersonal}) + \beta_{12}(\operatorname{Customer.Typeloyal})+\beta_{13}(\operatorname{Gender})+\beta_{14}(\operatorname{ClassEco}) $$
+$$+ \beta_{15}(\operatorname{ClassEcoPlus}) + \beta_{16}(\operatorname{Flight.Distance}) + \beta_{17}(\operatorname{Ease.of.Online.booking}) \beta_{18}(\operatorname{Online.boarding}) + \beta_{19}(\operatorname{Food.and.drink}) + $$
+$$\beta_{20}(\operatorname{Departure.Arrival.time.convenient}) + \beta_{21}(\operatorname{Baggage.handling}) + \beta_{22}(\operatorname{Gate.location}) + \beta_{23}(\operatorname{Checkin.service}), $$
+$$j = dissatisfied, neutral, satisfied  $$
+
+* The distributional assumption for the outcome variable is **Multinominal Distribution**, and the link function is **logit function**.
+
+# Model Results
+
+```{r echo = FALSE,warning=FALSE, message=FALSE, fig.align='center',fig.cap="Table 3. Model Results1"}
+Model1 <- polr(Satisfaction ~ Seat.comfort + Leg.room.service + Arrival.Delay.in.Minutes + Departure.Delay.in.Minutes + Inflight.service + On.board.service + Cleanliness + Inflight.entertainment + Inflight.wifi.service + Age + Type.of.Travel + Customer.Type + Gender + Class + Flight.Distance+ Ease.of.Online.booking + Online.boarding + Food.and.drink + Departure.Arrival.time.convenient + Baggage.handling + Gate.location + Checkin.service, data=airline)
+
+#no p-value in summary
+#summary(Model1)
+
+#obtain p-value
+p <- pnorm(-abs(summary(Model1)$coef[,"t value"])) * 2
+ctable <- cbind(summary(Model1)$coef, p)
+
+
+#knitr::kable(cbind(summary(Model1)$coef, p),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+```
+
+```{r echo = FALSE,warning=FALSE, message=FALSE}
+ptable <- cbind(summary(Model1)$coef, p)
+ptable<-ptable[1:23,]
+```
+
+
+```{r echo = FALSE,warning=FALSE, message=FALSE, fig.align='center',fig.cap="Table 4. Model Results2"}
+#confidence intervals
+knitr::kable(cbind(ptable,exp(cbind(OR = coef(Model1), confint(Model1)))),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+```
+* The influence of **Seat.comfort, Departure.Delay.in.Minutes, Inflight.entertainment, age, gender, Flight.Distance, Food.and.drink, Baggage.handling, and Gate.location** on customer satisfaction is not statistically significant (p-value > 0.05).
+
+* **Leg.room.service**: Controlling for other predictors in the model, for every one unit increase in the score of Leg.room.service, the odds of being more satisfied(in the satisfied direction) are **1.18** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **1.11 and 1.26**, which is statistically significant**(p<0.01)**.
+
+* **Arrival.Delay.in.Minutes**: Controlling for other predictors in the model, for every one minute more of Arrival.Delay.in.Minutes, the odds of being more satisfied(in the satisfied direction) are **0.99** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **0.98 and 1.00**, which is statistically significant**(p<0.01)**.
+
+* **Inflight.service**: Controlling for other predictors in the model, for every one unit increase in the score of Inflight.service, the odds of being more satisfied(in the satisfied direction) are **1.13** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **1.03 and 1.24**, which is statistically significant**(p=0.01)**.
+
+* **On.board.service**: Controlling for other predictors in the model, for every one unit increase in the score of On.board.service, the odds of being more satisfied(in the satisfied direction) are **1.20** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **1.11 and 1.30**, which is statistically significant**(p<0.01)**.
+
+* **Cleanliness	**: Controlling for other predictors in the model, for every one unit increase in the score of Cleanliness, the odds of being more satisfied(in the satisfied direction) are **1.12** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **1.01 and 1.24**, which is statistically significant**(p=0.03)**.
+
+* **Inflight.wifi.service	**: Controlling for other predictors in the model, for every one unit increase in the score of Inflight.wifi.service, the odds of being more satisfied(in the satisfied direction) are **1.47** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **1.33 and 1.63**, which is statistically significant**(p<0.01)**.
+
+* **Type.of.Travel**: Controlling for other predictors in the model, the odds that personal travelers of being more satisfied(in the satisfied direction) rather than being less satisfied(in the dissatisfied direction) are **0.14** times for business travelers. We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **0.11 and 0.18**, which is statistically significant**(p<0.01)**.
+
+* **Customer.Type	**: Controlling for other predictors in the model, the odds that loyal customer of being more satisfied(in the satisfied direction) rather than being less satisfied(in the dissatisfied direction) are **6.41** times the odds for disloyal customer. We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **5.02 and 8.20**, which is statistically significant**(p<0.01)**.
+
+* **Class	**: Controlling for other predictors in the model, the odds that people taking Eco/Eco_plus class of being more satisfied(in the satisfied direction) rather than being less satisfied(in the dissatisfied direction) are **0.79/0.59** times the odds for people taking business class . We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **0.64/0.43 and 0.98/0.80**, which is statistically significant**(p=0.01/p<0.01)**.
+
+* **Ease.of.Online.booking**: Controlling for other predictors in the model, for every one unit increase in the score of Ease.of.Online.booking, the odds of being more satisfied(in the satisfied direction) are **0.84** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **0.76 and 0.92**, which is statistically significant**(p<0.01)**.
+
+* **Online.boarding**: Controlling for other predictors in the model, for every one unit increase in the score of Online.boarding, the odds of being more satisfied(in the satisfied direction) are **1.68** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **1.54 and 1.83**, which is statistically significant**(p<0.01)**.
+
+* **Departure.Arrival.time.convenient**: Controlling for other predictors in the model, for every one unit increase in the score of Departure.Arrival.time.convenient, the odds of being more satisfied(in the satisfied direction) are **0.93** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **0.86 and 1.00**, which is statistically significant**(p<0.01)**.
+
+* **Checkin.service**: Controlling for other predictors in the model, for every one unit increase in the score of Checkin.service, the odds of being more satisfied(in the satisfied direction) are **1.22** times the odds of being less satisfied(in the dissatisfied direction). We are 95% confident that the true odds ratio of higher vs. lower categories(more satisfied vs. less satisfied) is between **1.14 and 1.31**, which is statistically significant**(p<0.01)**.
+
+# Model Assessment
+
+* The Accuracy of this model is **0.64**.
+
+```{r echo = FALSE,warning=FALSE, message=FALSE,fig.align='center',fig.width=5,fig.height= 3}
+#head(Model1$fitted.values)
+#head(predict(Model1))
+```
+
+
+```{r echo = FALSE,warning=FALSE, message=FALSE,fig.align='center',fig.width=5,fig.height= 3,fig.cap="Table 5. Confusion Matrix, Accurancy, Sensitivity, and Specificity"}
+Conf_mat <- confusionMatrix(predict(Model1), airline$Satisfaction)
+
+#confusionMatrix(predict(Model1), airline$Satisfaction)
+
+t1 <- Conf_mat$table
+t2 <- Conf_mat$overall["Accuracy"];
+#t3 <- Conf_mat$byClass[c("Sensitivity","Specificity")]
+
+Class <- c('dissatisfied','neutral', 'satisfied' )
+Sensitivity <- c( '0.49', '0.23', '0.87')
+Specificity <- c('0.76','0.86','0.76')
+t3 <- data.frame(Class,Sensitivity,Specificity)
+#t3 %>% regulartable() %>% autofit()
+
+knitr::kable(list(t1, t2,t3),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+```
+
+### Multinomial vs. proportional---Compare predictions using the predictors Gender and Customer type
+
+```{r echo = FALSE,warning=FALSE, message=FALSE,fig.align='center',fig.width=5,fig.height= 3}
+newdat <- data.frame(Seat.comfort = mean(airline$Seat.comfort), Leg.room.service =mean(airline$Leg.room.service), Arrival.Delay.in.Minutes =mean(airline$Arrival.Delay.in.Minutes), Departure.Delay.in.Minutes = mean(airline$Departure.Delay.in.Minutes), Inflight.service = mean(airline$Inflight.service), On.board.service=mean(airline$On.board.service), Cleanliness = mean(airline$Cleanliness), Inflight.entertainment = mean(airline$Inflight.entertainment), Inflight.wifi.service=mean(airline$Inflight.wifi.service), Age=mean(airline$Age),  Type.of.Travel = 'Business travel', Customer.Type = c('Loyal Customer','disloyal Customer','Loyal Customer','disloyal Customer'), Gender = c('Male','Male','Female','Female'), Class ='Eco', Flight.Distance=mean(airline$Flight.Distance), Ease.of.Online.booking=mean(airline$Ease.of.Online.booking), Online.boarding=mean(airline$Online.boarding), Food.and.drink=mean(airline$Food.and.drink), Departure.Arrival.time.convenient=mean(airline$Departure.Arrival.time.convenient), Baggage.handling= mean(airline$Baggage.handling), Gate.location=mean(airline$Gate.location), Checkin.service=mean(airline$Checkin.service))
+```
+
+```{r echo = FALSE,warning=FALSE, message=FALSE,fig.align='center',fig.width=5,fig.height= 3, results='hide'}
+multmod <- multinom(Satisfaction ~ Seat.comfort + Leg.room.service + Arrival.Delay.in.Minutes + Departure.Delay.in.Minutes + Inflight.service + On.board.service + Cleanliness + Inflight.entertainment + Inflight.wifi.service + Age + Type.of.Travel + Customer.Type + Gender + Class + Flight.Distance+ Ease.of.Online.booking + Online.boarding + Food.and.drink + Departure.Arrival.time.convenient + Baggage.handling + Gate.location + Checkin.service , data=airline)
+```
+
+**Checking proportional odds assumption**
+
+* When trying to compare predictions using the predictors *Gender* and *Customer type*, we create a new dataframe with different pairs of gender and customer type while keeping other variables all the same(use mean value for other numeric variables, and choose mode for categorical variables(business customer type and eco plane class)).
+
+* The left table shows the results of prediction using the proportional odds model, and the right one shows the results of prediction using the multinomial model. We can tell that thought the overall trend is the same, the predicted probabilities of the two models are not quite the same, which means the proportional odds assumption is not perfectly met.
+
+```{r echo = FALSE,warning=FALSE, message=FALSE}
+p1 <- predict(Model1, newdat,type = 'probs')
+p2 <- predict(multmod, newdat,type = 'probs')
+knitr::kable(list(p1, p2), digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+```
+
+```{r echo = FALSE,warning=FALSE, message=FALSE,fig.align='center',fig.width=5,fig.height= 3}
+#Conf_mat_mult <- confusionMatrix(predict(multmod, newdat), airline$Satisfaction)
+#Conf_mat_prop <- confusionMatrix(predict(Model1, newdat), airline$Satisfaction)
+Conf_mat_mult <- confusionMatrix(predict(multmod), airline$Satisfaction)
+```
+
+* **The accuracy for the multinomial model is 0.67**, which is higher than the accuracy for the proportional odds model.
+
+```{r echo = FALSE,warning=FALSE, message=FALSE,fig.align='center',fig.width=5,fig.height= 3, fig.cap="Table 6. Confusion Matrix, Accurancy, Sensitivity, and Specificity for Multinomial Model"}
+t1 <- Conf_mat_mult$table
+t2 <- Conf_mat_mult$overall["Accuracy"]
+
+#t3 <- Conf_mat_prop$table
+#t4 <- Conf_mat_prop$overall["Accuracy"]
+
+knitr::kable(list(t1, t2),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+#knitr::kable(list(t3, t4), digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+```
+
+# Conclusion
+
+* Marketing and promotion initiatives to **improve customer loyalty and appeal to business travelers** are the most cost efficient way to improve customer satisfaction. Investments on**Leg.room.service, Inflight.service, On.board.service, Cleanliness, Inflight.wifi.service, Online.boarding, and Checkin.service** can also improve customer satisfaction. 
+
+* The ordered regression approach is more powerful and parsimonious when the outcome variable has an ordered structure and the “proportional odds” assumption holds. The proportional odds assumption means that for each term included in the model, the 'slope' estimate between each pair of outcomes across two response levels are assumed to be the same regardless of which partition we consider. Since the assumption is not perfectly met, multinomial logistic regression is more “precise”. It is a tradeoff between power and assumptions. Since our response variable is ordinal, the proportional odds model is still more suitable. In addition, in order to make analysis based on the current dataset, we exclude value 0 from the original dataset since 0 means 'not applicable'. Limitations also include the fact that loyal customers are more likely to respond to the survey and are more likely to be satisfied with services, which also decreases the validity of this analysis.
+
+\newpage
+# Report for the Client
+
+# Introduction
+
+In order to find services that are worth investing to improve customer satisfaction, we first need to have a look at our dataset. Overall, we have gathered 3187 data from our customer, where 1394(43.74%) of them are satisfied, 872(25.95%) of them are neutral, and 921(28.90%) of them are dissatisfied. 
+
+The following table shows the distribution of customers in the different satisfactory categories based on different customers features, including age, gender, Purpose of the passenger’s flight (personal, business), travel class in the plane (business, eco, eco plus), and customer type (loyal or disloyal). 
+```{r echo = FALSE,warning=FALSE, message=FALSE, fig.align='center'}
+airline$Satisfaction <- ordered(airline$Satisfaction,
+                              levels=c("dissatisfied","neutral","satisfied"))
+airline <- airline[airline$Seat.comfort != 0 & airline$Leg.room.service !=0 & airline$Inflight.service !=0 & airline$On.board.service!=0 & airline$Cleanliness !=0 & airline$Inflight.entertainment!=0 & airline$Inflight.wifi.service!=0 & airline$Ease.of.Online.booking!=0 & airline$Online.boarding!=0 & airline$Food.and.drink!=0 & airline$Departure.Arrival.time.convenient!=0 & airline$Baggage.handling!=0 & airline$Gate.location!=0 & airline$Checkin.service!=0,]
+```
+
+```{r echo = FALSE,align='center',fig.width=10,fig.height= 3.5}
+x <- c(1394,872,921)
+piepercent = paste(round(100*x/sum(x)), "%")
+cols = c("#3f48CC","#22B14C","#FFC90E")
+la<-c('satisfied','neutral','dissatisfied')
+pie(x, labels = piepercent, main = "Distribution of Customers in the Different Satisfaction Categories", cex = 1.5,col = cols)
+legend("topright", la, cex=1.2,fill=cols)
+```
+```{r echo = FALSE,fig.cap="Table 1. Satisfaction vs. Other Variables"}
+table1(~  Age + Gender + Type.of.Travel + Class + Customer.Type| Satisfaction, data=airline)
+```
+
+# Methods
+
+Customer satisfaction is on an **ordered 3 scale outcome: dissatisfied, neutral, and satisfied**, which means that our response variable is ordinal. When we have ordinal responses with categories dissatisfied, neutral, and satisfied, we need to use models that can reflect the ordering.
+
+The model we are going to use is one type of generalized linear model, called **proportional odds model**.With coefficients that we get from this model, we are able to understand the times of odds of being more satisfied (in the satisfied direction) than less satisfied (in the dissatisfied direction), which can determine how significant each predictor is in predicting satisfaction level and, as a result, determine the most important elements that LaneAir can adjust going forward to enhance the customer experience.
+
+```{r echo = FALSE,warning=FALSE, message=FALSE, fig.align='center',fig.cap="Table 3. Model Results1"}
+Model1 <- polr(Satisfaction ~ Seat.comfort + Leg.room.service + Arrival.Delay.in.Minutes + Departure.Delay.in.Minutes + Inflight.service + On.board.service + Cleanliness + Inflight.entertainment + Inflight.wifi.service + Age + Type.of.Travel + Customer.Type + Gender + Class + Flight.Distance+ Ease.of.Online.booking + Online.boarding + Food.and.drink + Departure.Arrival.time.convenient + Baggage.handling + Gate.location + Checkin.service, data=airline)
+
+#no p-value in summary
+#summary(Model1)
+
+#obtain p-value
+p <- pnorm(-abs(summary(Model1)$coef[,"t value"])) * 2
+ctable <- cbind(summary(Model1)$coef, p)
+
+
+#knitr::kable(cbind(summary(Model1)$coef, p),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+```
+
+```{r echo = FALSE,warning=FALSE, message=FALSE}
+ptable <- cbind(summary(Model1)$coef, p)
+ptable<-ptable[1:23,]
+```
+
+
+```{r echo = FALSE,warning=FALSE, message=FALSE, fig.align='center',fig.cap="Table 4. Model Results2"}
+#confidence intervals
+#knitr::kable(cbind(ptable,exp(cbind(OR = coef(Model1), confint(Model1)))),digits = 2)%>% kable_styling(position="center",full_width = FALSE,latex_options = c("hold_position"))
+```
+
+# Results
+
+After fitting proportional odds model used important different customers features, their satisfaction with various aspects of the flight, and detail of their flight information, we found out that **Seat.comfort, Departure.Delay.in.Minutes, Inflight.entertainment, age, gender, Flight.Distance, Food.and.drink, Baggage.handling, and Gate.location** don't impact our customers satisfaction a lot, while other features play important roles in our customers satisfaction. 
+
+The following figure shows the times of odds of being more satisfied(in the satisfied direction) than being less satisfied(in the dissatisfied direction) with some features that we care about to improve our customers satisfaction.
+
+```{r echo = FALSE,warning=FALSE, message=FALSE,fig.align='center',fig.width=8,fig.height= 3}
+#Predictors <- c('Seat.comfort','Leg.room.service', 'Arrival.Delay.in.Minutes' , 'Inflight.service' , 'On.board.service' ,'Cleanliness' ,'Inflight.wifi.service', 'Type.of.Travel', 'Customer.Type')
+#Times_of_odds <-c('1.23','1.18','0.99','1.26','1.29','1.25','1.30','0.11','5.92')
+
+df <- data.frame(Predictors = c('Leg.room.service', 'Arrival.Delay.in.Minutes' , 'Inflight.service' , 'On.board.service' ,'Cleanliness' ,'Inflight.wifi.service', 'Type.of.Travel_Personal', 'Customer.Type_Loyal','ClassEco','ClassEcoPlus','Ease.of.Online.booking','Online.boarding','Departure.Arrival.time.convenient','Checkin.service'),
+Times_of_odds = c(1.18,0.99,1.13,1.20,1.12,1.47,0.14,6.41,0.79,0.59,0.84,1.68,0.93,1.22))
+
+ggplot(df,aes(x=Predictors, y=Times_of_odds)) +
+  geom_bar(stat = 'identity') +
+  theme_classic() +
+  labs(title="Times_of_odds vs Predictors",x="Predictors",y="Times_of_odds")+
+  geom_label(data = df, aes(label = Times_of_odds))+ 
+  theme(legend.position="none",axis.text.x = element_text(angle = 18, vjust = 0.5, hjust=1))
+#plot(x = as.factor(Predictors), y = Times_of_odds)
+
+
+```
+
+We can tell that with times_of_odds greater than 1, increase customers satisfaction in **Leg.room.service, Inflight.service, On.board.service, Cleanliness, Inflight.wifi.service, Online.boarding, and Checkin.service** can improve customer satisfaction. Meanwhile, **loyal customer and business travelers** are more satisfied with our flight.
+
+
+# Conclusion
+
+* Marketing and promotion initiatives to improve customer loyalty and appeal to business travelers are the most cost efficient way to improve customer satisfaction.
+
+* Investments on technology and hiring more flight attendants or other staff can also be good choices to improve customer satisfaction.
+
+* Newer plane models that improve reliability to reduce delays have no statistically significant relationship with customer satisfaction.Though larger seats can improve seat comfort and leg room and thus improve customer satisfaction, after considering the difficulties of investments, the disadvantages of reducing the number of seats per plane, and their impact on customer satisfaction, we only recommend investing in newer, larger seats when investments on the first two points above have already been made and further improvement on customer satisfaction is needed.
+
+* Investments on online boarding and checkin service can also be good ways to improve customer satisfaction.
+
+* Limitations: Because loyal customers are more likely to respond to the survey and are more likely to be satisfied with our services, we may need to find ways to get more balanced data to better understand the drives of customer satisfaction.
+
+\newpage
+
+## Appendix: All code for this report
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
